@@ -109,7 +109,7 @@ static const int VIDEO_ENCODE_OUTPUT_PORT = 201;
 
 // Directory to put recorded MPEG-TS files
 static const char *rec_dir = "rec";
-static const char *rec_tmp_dir = "rec/tmp";
+static const char *rec_tmp_dir = "/run/shm/tmp";
 static const char *rec_archive_dir = "rec/archive";
 
 // Whether or not to enable clock OMX component
@@ -565,9 +565,9 @@ int create_dir(const char *dir) {
     if (errno == ENOENT) {
       // create directory
       if (mkdir(dir, 0755) == 0) { // success
-        log_info("created directory: ./%s\n", dir);
+        log_info("created directory: %s\n", dir);
       } else { // error
-        log_error("error creating directory ./%s: %s\n",
+        log_error("error creating directory %s: %s\n",
             dir, strerror(errno));
         return -1;
       }
@@ -577,13 +577,13 @@ int create_dir(const char *dir) {
     }
   } else {
     if (!S_ISDIR(st.st_mode)) {
-      log_error("error: ./%s is not a directory\n", dir);
+      log_error("error: %s is not a directory\n", dir);
       return -1;
     }
   }
 
   if (access(dir, R_OK) != 0) {
-    log_error("error: cannot access directory ./%s: %s\n",
+    log_error("error: cannot access directory %s: %s\n",
         dir, strerror(errno));
     return -1;
   }
@@ -703,7 +703,7 @@ void *rec_thread_start() {
   snprintf(recording_filepath, 50, "rec/%s.ts", filename_base);
   if (access(recording_filepath, F_OK) != 0) {
     snprintf(recording_archive_filepath, 50, "rec/archive/%s.ts", filename_base);
-    snprintf(recording_tmp_filepath, 50, "rec/tmp/%s.ts", filename_base);
+    snprintf(recording_tmp_filepath, 50, "%s/%s.ts", rec_tmp_dir, filename_base);
     filename_decided = 1;
   }
   while (!filename_decided) {
@@ -711,7 +711,7 @@ void *rec_thread_start() {
     snprintf(recording_filepath, 50, "rec/%s-%d.ts", filename_base, unique_number);
     if (access(recording_filepath, F_OK) != 0) {
       snprintf(recording_archive_filepath, 50, "rec/archive/%s.ts", filename_base);
-      snprintf(recording_tmp_filepath, 50, "rec/tmp/%s-%d.ts", filename_base, unique_number);
+      snprintf(recording_tmp_filepath, 50, "%s/%s-%d.ts", rec_tmp_dir, filename_base, unique_number);
       filename_decided = 1;
     }
   }
