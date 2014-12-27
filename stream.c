@@ -93,6 +93,9 @@ extern "C" {
 // Whether or not to pass pBuffer from camera to video_encode directly
 #define ENABLE_PBUFFER_OPTIMIZATION_HACK 1
 
+// max length file path
+#define MAX_PATH_LENGTH 256
+
 #if ENABLE_PBUFFER_OPTIMIZATION_HACK
 static OMX_BUFFERHEADERTYPE *video_encode_input_buf = NULL;
 static OMX_U8 *video_encode_input_buf_pBuffer_orig = NULL;
@@ -228,6 +231,9 @@ static int preview_height;
 static int record_buffer_keyframes;
 static const int record_buffer_keyframes_default = 5;
 
+static int record_split_seconds;
+static const int record_split_seconds_default = 0;
+
 static int64_t video_current_pts = 0;
 static int64_t audio_current_pts = 0;
 static int64_t last_pts = 0;
@@ -258,6 +264,7 @@ static void encode_and_send_image();
 static void encode_and_send_audio();
 void start_record();
 void stop_record();
+void split_record();
 
 static long long video_frame_count = 0;
 static long long audio_frame_count = 0;
@@ -344,6 +351,7 @@ static int rec_thread_needs_write = 0;
 static int rec_thread_needs_exit = 0;
 static int rec_thread_frame = 0;
 static int rec_thread_needs_flush = 0;
+static int rec_thread_needs_split = 0;
 
 EncodedPacket **encoded_packets; // circular buffer
 static int current_encoded_packet = -1;
@@ -354,9 +362,9 @@ static int encoded_packets_size;
 
 // hooks
 static pthread_t hooks_thread;
-char recording_filepath[50];
-char recording_tmp_filepath[50];
-char recording_archive_filepath[50];
+char recording_filepath[MAX_PATH_LENGTH];
+char recording_tmp_filepath[MAX_PATH_LENGTH];
+char recording_archive_filepath[MAX_PATH_LENGTH];
 int is_recording = 0;
 
 static MpegTSCodecSettings codec_settings;
@@ -491,6 +499,41 @@ static void free_encoded_packets() {
       av_free(packet->data);
     }
     free(packet);
+  }
+}
+
+static void decide_filename(int part_num) {
+  time_t rawtime;
+  struct tm *timeinfo;
+  char time_base[20];
+  char filename_base[32];
+  int filename_decided = 0;
+  int unique_number = 1;
+
+  time(&rawtime);
+  timeinfo = localtime(&rawtime);
+
+  strftime(time_base, 20, "%Y-%m-%d_%H-%M-%S", timeinfo);
+  if(record_split_seconds || part_num) {
+    snprintf(filename_base, 32, "%s-P%08u", time_base, part_num);
+  }
+  else {
+    snprintf(filename_base, 32, "%s", time_base);
+  }
+  snprintf(recording_filepath, MAX_PATH_LENGTH, "rec/%s.ts", filename_base);
+  if (access(recording_filepath, F_OK) != 0) {
+    snprintf(recording_archive_filepath, MAX_PATH_LENGTH, "rec/archive/%s.ts", filename_base);
+    snprintf(recording_tmp_filepath, MAX_PATH_LENGTH, "%s/%s.ts", rec_tmp_dir, filename_base);
+    filename_decided = 1;
+  }
+  while (!filename_decided) {
+    unique_number++;
+    snprintf(recording_filepath, MAX_PATH_LENGTH, "rec/%s-%d.ts", filename_base, unique_number);
+    if (access(recording_filepath, F_OK) != 0) {
+      snprintf(recording_archive_filepath, MAX_PATH_LENGTH, "rec/archive/%s.ts", filename_base);
+      snprintf(recording_tmp_filepath, MAX_PATH_LENGTH, "%s/%s-%d.ts", rec_tmp_dir, filename_base, unique_number);
+      filename_decided = 1;
+    }
   }
 }
 
@@ -660,32 +703,35 @@ void stop_record() {
   rec_thread_needs_exit = 1;
 }
 
+void split_record() {
+  rec_thread_needs_split = 1;
+}
+
+
 void check_record_duration() {
   time_t now;
 
   if (is_recording) {
     now = time(NULL);
-    if (now - rec_start_time > flush_recording_seconds) {
+    if (now - rec_start_time >= flush_recording_seconds) {
       flush_record();
     }
   }
 }
 
 void *rec_thread_start() {
-  time_t rawtime;
-  struct tm *timeinfo;
   AVPacket av_pkt;
   int wrote_packets;
   int is_caught_up = 0;
-  int unique_number = 1;
   int64_t rec_start_pts, rec_end_pts;
   char diff_pts[11];
   EncodedPacket *enc_pkt;
-  char filename_base[20];
-  int filename_decided = 0;
   uint8_t *copy_buf;
   FILE *fsrc, *fdest;
   int read_len;
+  int split_parts_count = 0;
+  time_t split_cur_part_start_time;
+
 
   copy_buf = malloc(BUFSIZ);
   if (copy_buf == NULL) {
@@ -693,28 +739,11 @@ void *rec_thread_start() {
     pthread_exit(0);
   }
 
-  time(&rawtime);
-  timeinfo = localtime(&rawtime);
-
   rec_start_time = time(NULL);
+  split_cur_part_start_time = rec_start_time;
   rec_start_pts = -1;
 
-  strftime(filename_base, 80, "%Y-%m-%d_%H-%M-%S", timeinfo);
-  snprintf(recording_filepath, 50, "rec/%s.ts", filename_base);
-  if (access(recording_filepath, F_OK) != 0) {
-    snprintf(recording_archive_filepath, 50, "rec/archive/%s.ts", filename_base);
-    snprintf(recording_tmp_filepath, 50, "%s/%s.ts", rec_tmp_dir, filename_base);
-    filename_decided = 1;
-  }
-  while (!filename_decided) {
-    unique_number++;
-    snprintf(recording_filepath, 50, "rec/%s-%d.ts", filename_base, unique_number);
-    if (access(recording_filepath, F_OK) != 0) {
-      snprintf(recording_archive_filepath, 50, "rec/archive/%s.ts", filename_base);
-      snprintf(recording_tmp_filepath, 50, "%s/%s-%d.ts", rec_tmp_dir, filename_base, unique_number);
-      filename_decided = 1;
-    }
-  }
+  decide_filename(0);
 
   pthread_mutex_lock(&rec_write_mutex);
   rec_format_ctx = mpegts_create_context(&codec_settings);
@@ -761,6 +790,12 @@ void *rec_thread_start() {
       log_debug("F");
       mpegts_close_stream_without_trailer(rec_format_ctx);
 
+      if(record_split_seconds) {
+        if (time(NULL) - split_cur_part_start_time >= record_split_seconds - flush_recording_seconds/2) {
+          rec_thread_needs_split = 1;
+        }
+      }
+
       fsrc = fopen(recording_tmp_filepath, "r");
       if (fsrc == NULL) {
         perror("fopen recording_tmp_filepath");
@@ -785,6 +820,25 @@ void *rec_thread_start() {
         log_error("error: rec_thread_start: not an EOF?: %s\n", strerror(errno));
       }
 
+      if(rec_thread_needs_split) {
+        // link
+        log_debug("symlink");
+        if (symlink(recording_archive_filepath + 4, recording_filepath) != 0) { // +4 is for trimming "rec/"
+          perror("symlink recording_archive_filepath");
+        }
+        
+        // unlink current tmp file
+        log_debug("unlink");
+        unlink(recording_tmp_filepath);
+        
+        // decide new file name
+        split_parts_count++;
+        decide_filename(split_parts_count);
+        log_info("start rec to %s\n", recording_tmp_filepath);
+        
+        split_cur_part_start_time = time(NULL);
+        rec_thread_needs_split = 0;
+      }
       mpegts_open_stream_without_header(rec_format_ctx, recording_tmp_filepath, 0);
       rec_thread_needs_flush = 0;
       rec_start_time = time(NULL);
@@ -825,6 +879,8 @@ void on_file_create(char *filename, char *content) {
     start_record();
   } else if (strcmp(filename, "stop_record") == 0) {
     stop_record();
+  } else if (strcmp(filename, "split_record") == 0) {
+    split_record();
   } else if (strcmp(filename, "mute") == 0) {
     mute_audio();
   } else if (strcmp(filename, "unmute") == 0) {
@@ -3138,6 +3194,10 @@ static void print_usage() {
   log_info(" [misc]\n");
   log_info("  --recordbuf <num>   Start recording from <num> keyframes ago\n");
   log_info("                      (default: %d)\n", record_buffer_keyframes_default);
+  log_info("  --recordsplit <num> Split and create new recording file every (approx.) <num> seconds\n");
+  log_info("                      Input value smaller than %d will be rounded up to %d.\n",flush_recording_seconds, flush_recording_seconds);
+  log_info("                      (Set to 0 to disable spliting. default: %d)\n", record_split_seconds_default);
+  log_info("                      note: file is not splited at keyframes\n");
   log_info("  --statedir <dir>    Set state dir (default: %s)\n", state_dir_default);
   log_info("  --hooksdir <dir>    Set hooks dir (default: %s)\n", hooks_dir_default);
   log_info("  -q, --quiet         Suppress all output except errors\n");
@@ -3189,6 +3249,7 @@ int main(int argc, char **argv) {
     { "previewrect", required_argument, NULL, 0 },
     { "quiet", no_argument, NULL, 'q' },
     { "recordbuf", required_argument, NULL, 0 },
+    { "recordsplit", required_argument, NULL, 0 },
     { "verbose", no_argument, NULL, 0 },
     { "version", no_argument, NULL, 0 },
     { "help", no_argument, NULL, 0 },
@@ -3242,6 +3303,8 @@ int main(int argc, char **argv) {
   is_preview_enabled = is_preview_enabled_default;
   is_previewrect_enabled = is_previewrect_enabled_default;
   record_buffer_keyframes = record_buffer_keyframes_default;
+  record_split_seconds = record_split_seconds_default;
+
 
   while ((opt = getopt_long(argc, argv, "w:h:v:f:g:c:r:a:o:pq", long_options, &option_index)) != -1) {
     switch (opt) {
@@ -3466,6 +3529,22 @@ int main(int argc, char **argv) {
             return EXIT_FAILURE;
           }
           record_buffer_keyframes = value;
+        } else if (strcmp(long_options[option_index].name, "recordsplit") == 0) {
+          char *end;
+          long value = strtol(optarg, &end, 10);
+          if (end == optarg || *end != '\0' || errno == ERANGE) { // parse error
+            log_fatal("error: invalid recordsplit: %s\n", optarg);
+            print_usage();
+            return EXIT_FAILURE;
+          }
+          if (value < 0) {
+            log_fatal("error: invalid recordsplit: %ld (must be >= 0)\n", value);
+            return EXIT_FAILURE;
+          } else if(value > 0 && value < flush_recording_seconds) {
+            record_split_seconds = flush_recording_seconds;
+          } else if(value > 0) {
+            record_split_seconds = value;
+          }
         } else if (strcmp(long_options[option_index].name, "verbose") == 0) {
           log_set_level(LOG_LEVEL_DEBUG);
         } else if (strcmp(long_options[option_index].name, "version") == 0) {
