@@ -2456,13 +2456,14 @@ static int video_encode_startup() {
   avctype.nBFrames = 0;
 
   // Set the profile to Constrained Baseline Profile, Level 3.1
-  avctype.eProfile = OMX_VIDEO_AVCProfileConstrainedBaseline; // Main profile is not playable on Android
+  avctype.eProfile = OMX_VIDEO_AVCProfileMain; // Use main profile to enbale CABAC
   avctype.eLevel = OMX_VIDEO_AVCLevel31; // Level 4.1 is not supported on Raspberry Pi
   // Level 3.1 allows up to 1280x720 @ 30.0 FPS (720p)
 
   avctype.nAllowedPictureTypes = OMX_VIDEO_PictureTypeI | OMX_VIDEO_PictureTypeP;
   avctype.bUseHadamard = OMX_TRUE; // not sure
-//  avctype.nRefFrames = 1;          // not sure
+  avctype.nRefFrames = 1;          // set to 1 since we only use I and P frames
+  // following 3 tools are only supported in Extended profile
   avctype.bEnableFMO = OMX_FALSE;  // not allowed in CBP (Constrained Baseline profile)
   avctype.bEnableASO = OMX_FALSE;  // not allowed in CBP
   avctype.bEnableRS = OMX_FALSE;   // not allowed in CBP
@@ -2471,7 +2472,7 @@ static int video_encode_startup() {
   avctype.bWeightedPPrediction = OMX_FALSE; // FALSE is required by BP
   avctype.bconstIpred = OMX_FALSE;          // not sure
   avctype.bFrameMBsOnly = OMX_TRUE;         // TRUE is required by BP
-  avctype.bEntropyCodingCABAC = OMX_FALSE;  // FALSE is required by BP
+  avctype.bEntropyCodingCABAC = OMX_TRUE;  // FALSE is required by BP, can be enabled in MP
 //  avctype.nWeightedBipredicitonMode = 0;    // not sure
 
   // Set AVC parameter
@@ -3708,7 +3709,7 @@ int main(int argc, char **argv) {
   fr_q16 = video_fps * 65536;
   if (video_pts_step == video_pts_step_default) {
     if (video_fps == 30.0f) {
-      video_pts_step = 2955;
+      video_pts_step = 3000; //changed this value to great 30fps video rather than 30.46fps
     } else if (video_fps == 29.97f) {
       video_pts_step = 2959;
     } else if (video_fps == 29.0f) {
