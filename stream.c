@@ -43,6 +43,7 @@ extern "C" {
 #include "httplivestreaming.h"
 #include "state.h"
 #include "log.h"
+#include "textoverlay.h"
 
 #define PROGRAM_NAME     "picam"
 #define PROGRAM_VERSION  "1.2.6"
@@ -233,6 +234,9 @@ static const int record_buffer_keyframes_default = 5;
 
 static int record_split_seconds;
 static const int record_split_seconds_default = 0;
+
+static int is_timestamp_enabled;
+static const int is_timestamp_enabled_default = 0;
 
 static int64_t video_current_pts = 0;
 static int64_t audio_current_pts = 0;
@@ -2627,6 +2631,10 @@ static void encode_and_send_image() {
     exit(EXIT_FAILURE);
   }
 
+  if(is_timestamp_enabled) {
+    add_timestamp_overlay(video_width, video_height, last_video_buffer);   
+  }
+
 #if ENABLE_PBUFFER_OPTIMIZATION_HACK
   if (video_encode_input_buf == NULL) {
     video_encode_input_buf = buf;
@@ -3199,6 +3207,7 @@ static void print_usage() {
   log_info("                      Input value smaller than %d will be rounded up to %d.\n",flush_recording_seconds, flush_recording_seconds);
   log_info("                      (Set to 0 to disable spliting. default: %d)\n", record_split_seconds_default);
   log_info("                      note: file is not splited at keyframes\n");
+  log_info("  --timestamp         Enable timestamp overlay at right-bottom corner of the picture\n");
   log_info("  --statedir <dir>    Set state dir (default: %s)\n", state_dir_default);
   log_info("  --hooksdir <dir>    Set hooks dir (default: %s)\n", hooks_dir_default);
   log_info("  -q, --quiet         Suppress all output except errors\n");
@@ -3251,6 +3260,7 @@ int main(int argc, char **argv) {
     { "quiet", no_argument, NULL, 'q' },
     { "recordbuf", required_argument, NULL, 0 },
     { "recordsplit", required_argument, NULL, 0 },
+    { "timestamp", no_argument, NULL, 0 },
     { "verbose", no_argument, NULL, 0 },
     { "version", no_argument, NULL, 0 },
     { "help", no_argument, NULL, 0 },
@@ -3305,6 +3315,7 @@ int main(int argc, char **argv) {
   is_previewrect_enabled = is_previewrect_enabled_default;
   record_buffer_keyframes = record_buffer_keyframes_default;
   record_split_seconds = record_split_seconds_default;
+  is_timestamp_enabled = is_timestamp_enabled_default;
 
 
   while ((opt = getopt_long(argc, argv, "w:h:v:f:g:c:r:a:o:pq", long_options, &option_index)) != -1) {
@@ -3546,6 +3557,8 @@ int main(int argc, char **argv) {
           } else if(value > 0) {
             record_split_seconds = value;
           }
+        } else if (strcmp(long_options[option_index].name, "timestamp") == 0) {
+          is_timestamp_enabled = 1;
         } else if (strcmp(long_options[option_index].name, "verbose") == 0) {
           log_set_level(LOG_LEVEL_DEBUG);
         } else if (strcmp(long_options[option_index].name, "version") == 0) {
