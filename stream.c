@@ -748,6 +748,7 @@ void *rec_thread_start() {
   rec_start_pts = -1;
 
   decide_filename(0);
+  state_set(state_dir, "current_rec", recording_archive_filepath);
 
   pthread_mutex_lock(&rec_write_mutex);
   rec_format_ctx = mpegts_create_context(&codec_settings);
@@ -838,6 +839,7 @@ void *rec_thread_start() {
         // decide new file name
         split_parts_count++;
         decide_filename(split_parts_count);
+        state_set(state_dir, "current_rec", recording_archive_filepath);
         log_info("start rec to %s\n", recording_tmp_filepath);
         
         split_cur_part_start_time = time(NULL);
